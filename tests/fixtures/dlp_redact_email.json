@@ -1,0 +1,10 @@
+{
+  "model": "gpt-4o-mini",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Please write a neutral support reply to alice@example.com about ticket 1234."
+    }
+  ],
+  "max_tokens": 64
+}

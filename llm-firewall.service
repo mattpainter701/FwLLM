@@ -1,0 +1,19 @@
+[Unit]
+Description=LLM Firewall
+After=network.target
+
+[Service]
+User=llmfw
+Group=llmfw
+EnvironmentFile=-/etc/llm-fw/llm-firewall.env
+ExecStart=/usr/local/bin/llm-firewall --config /etc/llm-fw/config.yaml
+Restart=always
+RestartSec=3
+LimitNOFILE=65536
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

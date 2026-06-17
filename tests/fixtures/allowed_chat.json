@@ -1,0 +1,10 @@
+{
+  "model": "gpt-4o-mini",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Summarize the release notes in one sentence."
+    }
+  ],
+  "max_tokens": 64
+}

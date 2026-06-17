@@ -1,0 +1,62 @@
+server:
+  bind: "0.0.0.0:8080"
+  allowed_paths:
+    - "/v1/chat/completions"
+  max_body_size: 1048576
+  max_response_buffer: 32768
+  request_timeout_secs: 60
+  metrics_path: "/metrics"
+  strict_chat_validation: true
+upstream:
+  url: "http://127.0.0.1:4000"
+  api_key_env: "OPENAI_API_KEY"
+  require_api_key: true
+detectors:
+  injection:
+    enabled: true
+    action: "block"
+    patterns:
+      - "ignore previous instructions"
+      - "disregard all prior instructions"
+      - "reveal your system prompt"
+      - "developer mode"
+      - "jailbreak"
+  dlp:
+    enabled: true
+    rules:
+      - name: "ssn"
+        pattern: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+        action: "redact"
+      - name: "credit_card"
+        pattern: "\\b(?:\\d[ -]*?){13,19}\\b"
+        action: "block"
+      - name: "email"
+        pattern: "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b"
+        action: "redact"
+      - name: "api_key"
+        pattern: "\\b(?:sk|pk|rk|xox[baprs])-[-A-Za-z0-9_]{16,}\\b"
+        action: "block"
+  system_prompt:
+    enabled: true
+    mode: "inject"
+    prompt: "You are behind an enterprise LLM firewall. Follow policy, refuse unsafe requests, and do not reveal confidential data."
+  output_sanitizer:
+    enabled: true
+    action: "redact"
+  tool_call:
+    enabled: true
+    allowed_tools:
+      - "get_weather"
+      - "search_docs"
+  token_budget:
+    enabled: true
+    max_request_tokens: 8192
+    max_window_tokens: 50000
+    window_secs: 3600
+  rate_limiter:
+    enabled: true
+    requests_per_minute: 60
+logging:
+  level: "info"
+  json: true
+  audit_body_chars: 2048
