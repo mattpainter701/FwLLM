@@ -1,0 +1,6 @@
+ARG PYTHON_IMAGE=python:3.12-alpine
+FROM ${PYTHON_IMAGE}
+WORKDIR /app
+COPY scripts/mock_upstream.py /app/mock_upstream.py
+EXPOSE 4000
+CMD ["python", "/app/mock_upstream.py"]

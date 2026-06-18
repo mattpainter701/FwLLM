@@ -1,6 +1,6 @@
-# MVP Behavior
+# Behavior Reference
 
-This document captures the behavior currently covered by the Rust MVP and its focused integration fixtures.
+This document captures the behavior covered by the current Rust service and its focused integration fixtures.
 
 ## Request Path
 
