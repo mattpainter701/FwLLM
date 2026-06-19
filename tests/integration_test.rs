@@ -50,6 +50,25 @@ fn sample_request_fixtures_are_valid_chat_payloads() {
     }
 }
 
+#[test]
+fn sample_request_fixtures_are_valid_response_payloads() {
+    for fixture in [
+        "allowed_response.json",
+        "responses_prompt_injection_block.json",
+        "responses_dlp_redact_email.json",
+    ] {
+        let body = load_fixture(fixture);
+        assert!(
+            body.get("model").and_then(Value::as_str).is_some(),
+            "{fixture} should set model"
+        );
+        assert!(
+            body.get("input").is_some(),
+            "{fixture} should contain response input"
+        );
+    }
+}
+
 #[actix_rt::test]
 async fn validate_config_cli_accepts_example_config() {
     let output = Command::new(firewall_binary())
@@ -138,6 +157,87 @@ async fn forwards_clean_chat_request_and_replaces_client_authorization() {
 }
 
 #[actix_rt::test]
+async fn forwards_clean_response_request_and_replaces_client_authorization() {
+    let upstream = start_upstream(UpstreamReply::json(json!({
+        "id": "resp-test",
+        "object": "response",
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "ok"}]
+        }]
+    })));
+    let api_key_env = unique_env_name("UPSTREAM_API_KEY");
+    std::env::set_var(&api_key_env, "upstream-secret");
+    let firewall = start_firewall(&upstream.url, &api_key_env).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/responses", firewall.url))
+        .bearer_auth("client-secret")
+        .header("accept-encoding", "gzip")
+        .header("x-correlation-id", "test-response-clean")
+        .json(&load_fixture("allowed_response.json"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("resp-test"));
+
+    let requests = upstream.requests();
+    assert_eq!(requests.len(), 1, "upstream should receive one request");
+    let forwarded = &requests[0];
+    assert_eq!(
+        forwarded.headers.get("authorization").map(String::as_str),
+        Some("Bearer upstream-secret")
+    );
+    assert!(
+        !forwarded.headers.contains_key("accept-encoding"),
+        "client compression hints should not be forwarded because response bodies must be inspected"
+    );
+    assert_eq!(
+        forwarded.body.pointer("/input/0/content/0/text"),
+        Some(&Value::String(
+            "Summarize the release notes in one sentence.".to_string()
+        ))
+    );
+
+    std::env::remove_var(api_key_env);
+}
+
+#[actix_rt::test]
+async fn injects_required_response_instructions_when_enabled() {
+    let upstream = start_upstream(UpstreamReply::json(json!({
+        "id": "resp-policy",
+        "object": "response",
+        "output": []
+    })));
+    let firewall =
+        start_firewall_with_system_prompt(&upstream.url, &unique_env_name("NO_KEY")).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/responses", firewall.url))
+        .json(&load_fixture("allowed_response.json"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let requests = upstream.requests();
+    assert_eq!(requests.len(), 1, "modified request should be forwarded");
+    assert_eq!(
+        requests[0].body.pointer("/instructions"),
+        Some(&Value::String("enterprise policy".to_string()))
+    );
+    assert!(
+        requests[0].body.get("messages").is_none(),
+        "response requests should use instructions, not chat messages"
+    );
+}
+
+#[actix_rt::test]
 async fn rejects_disallowed_upstream_path_before_forwarding() {
     let upstream = start_upstream(UpstreamReply::json(json!({
         "object": "list",
@@ -178,6 +278,29 @@ async fn rejects_malformed_chat_request_before_forwarding() {
     assert!(
         upstream.requests().is_empty(),
         "invalid chat requests should not reach upstream"
+    );
+}
+
+#[actix_rt::test]
+async fn rejects_malformed_response_request_before_forwarding() {
+    let upstream = start_upstream(UpstreamReply::json(json!({
+        "id": "resp-unreachable",
+        "object": "response",
+        "output": []
+    })));
+    let firewall = start_firewall(&upstream.url, &unique_env_name("NO_KEY")).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/responses", firewall.url))
+        .json(&json!({"model": "gpt-4o-mini"}))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    assert!(
+        upstream.requests().is_empty(),
+        "invalid response requests should not reach upstream"
     );
 }
 
@@ -261,6 +384,31 @@ async fn blocks_prompt_injection_before_forwarding_to_upstream() {
 }
 
 #[actix_rt::test]
+async fn blocks_responses_prompt_injection_before_forwarding_to_upstream() {
+    let upstream = start_upstream(UpstreamReply::json(json!({
+        "id": "resp-unreachable",
+        "object": "response",
+        "output": []
+    })));
+    let firewall = start_firewall(&upstream.url, &unique_env_name("NO_KEY")).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/responses", firewall.url))
+        .json(&load_fixture("responses_prompt_injection_block.json"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("prompt_injection"));
+    assert!(
+        upstream.requests().is_empty(),
+        "blocked requests should not reach upstream"
+    );
+}
+
+#[actix_rt::test]
 async fn redacts_dlp_matches_before_forwarding_to_upstream() {
     let upstream = start_upstream(UpstreamReply::json(json!({
         "id": "chatcmpl-redacted",
@@ -291,6 +439,94 @@ async fn redacts_dlp_matches_before_forwarding_to_upstream() {
         .unwrap();
     assert!(content.contains("[REDACTED]"));
     assert!(!content.contains("alice@example.com"));
+}
+
+#[actix_rt::test]
+async fn redacts_responses_dlp_matches_before_forwarding_to_upstream() {
+    let upstream = start_upstream(UpstreamReply::json(json!({
+        "id": "resp-redacted",
+        "object": "response",
+        "output": []
+    })));
+    let firewall = start_firewall(&upstream.url, &unique_env_name("NO_KEY")).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/responses", firewall.url))
+        .json(&load_fixture("responses_dlp_redact_email.json"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let requests = upstream.requests();
+    assert_eq!(requests.len(), 1, "redacted request should be forwarded");
+    let content = requests[0]
+        .body
+        .pointer("/input/0/content/0/text")
+        .and_then(Value::as_str)
+        .unwrap();
+    assert!(content.contains("[REDACTED]"));
+    assert!(!content.contains("alice@example.com"));
+}
+
+#[actix_rt::test]
+async fn blocks_unapproved_responses_request_tool_before_forwarding() {
+    let upstream = start_upstream(UpstreamReply::json(json!({
+        "id": "resp-unreachable",
+        "object": "response",
+        "output": []
+    })));
+    let firewall = start_firewall(&upstream.url, &unique_env_name("NO_KEY")).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/responses", firewall.url))
+        .json(&json!({
+            "model": "gpt-4o-mini",
+            "input": "hello",
+            "tools": [{"type": "web_search_preview"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("tool_call"));
+    assert!(
+        upstream.requests().is_empty(),
+        "blocked tool requests should not reach upstream"
+    );
+}
+
+#[actix_rt::test]
+async fn blocks_unapproved_responses_output_tool_after_upstream() {
+    let upstream = start_upstream(UpstreamReply::json(json!({
+        "id": "resp-tool",
+        "object": "response",
+        "output": [{
+            "type": "function_call",
+            "name": "unsafe_tool",
+            "arguments": "{}"
+        }]
+    })));
+    let firewall = start_firewall(&upstream.url, &unique_env_name("NO_KEY")).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/v1/responses", firewall.url))
+        .json(&load_fixture("allowed_response.json"))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("tool_call"));
+    assert_eq!(
+        upstream.requests().len(),
+        1,
+        "response policy should run after one upstream call"
+    );
 }
 
 #[actix_rt::test]
@@ -379,13 +615,35 @@ async fn start_firewall(upstream_url: &str, api_key_env: &str) -> FirewallProces
     start_firewall_with_require_api_key(upstream_url, api_key_env, false).await
 }
 
+async fn start_firewall_with_system_prompt(
+    upstream_url: &str,
+    api_key_env: &str,
+) -> FirewallProcess {
+    start_firewall_with_options(upstream_url, api_key_env, false, Some("enterprise policy")).await
+}
+
 async fn start_firewall_with_require_api_key(
     upstream_url: &str,
     api_key_env: &str,
     require_api_key: bool,
 ) -> FirewallProcess {
+    start_firewall_with_options(upstream_url, api_key_env, require_api_key, None).await
+}
+
+async fn start_firewall_with_options(
+    upstream_url: &str,
+    api_key_env: &str,
+    require_api_key: bool,
+    system_prompt: Option<&str>,
+) -> FirewallProcess {
     let bind_port = unused_port();
-    let config_path = write_test_config(bind_port, upstream_url, api_key_env, require_api_key);
+    let config_path = write_test_config(
+        bind_port,
+        upstream_url,
+        api_key_env,
+        require_api_key,
+        system_prompt,
+    );
     let mut child = Command::new(firewall_binary())
         .arg("--config")
         .arg(&config_path)
@@ -433,6 +691,7 @@ fn write_test_config(
     upstream_url: &str,
     api_key_env: &str,
     require_api_key: bool,
+    system_prompt: Option<&str>,
 ) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "llm-firewall-test-{}-{}.yaml",
@@ -440,11 +699,24 @@ fn write_test_config(
         unique_suffix()
     ));
 
+    let system_prompt_yaml = system_prompt
+        .map(|prompt| {
+            format!(
+                r#"  system_prompt:
+    enabled: true
+    mode: "inject"
+    prompt: "{prompt}"
+"#
+            )
+        })
+        .unwrap_or_default();
+
     let yaml = format!(
         r#"server:
   bind: "127.0.0.1:{bind_port}"
   allowed_paths:
     - "/v1/chat/completions"
+    - "/v1/responses"
   max_body_size: 1048576
   max_response_buffer: 32768
   request_timeout_secs: 5
@@ -479,7 +751,7 @@ detectors:
       - name: "api_key"
         pattern: '\b(?:sk|pk|rk|xox[baprs])-[-A-Za-z0-9_]{{16,}}\b'
         action: "block"
-  output_sanitizer:
+{system_prompt_yaml}  output_sanitizer:
     enabled: true
     action: "redact"
   tool_call:

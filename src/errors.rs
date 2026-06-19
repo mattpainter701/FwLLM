@@ -66,6 +66,8 @@ pub enum ProxyError {
     MissingBody,
     #[error("invalid OpenAI chat completion request: {0}")]
     InvalidChatRequest(String),
+    #[error("invalid OpenAI responses request: {0}")]
+    InvalidResponsesRequest(String),
     #[error("invalid JSON request body: {0}")]
     InvalidJson(#[from] serde_json::Error),
     #[error("detector error: {0}")]
@@ -89,6 +91,7 @@ impl ResponseError for ProxyError {
             ProxyError::UnsupportedContentType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             ProxyError::MissingBody
             | ProxyError::InvalidChatRequest(_)
+            | ProxyError::InvalidResponsesRequest(_)
             | ProxyError::InvalidJson(_) => StatusCode::BAD_REQUEST,
             ProxyError::Detector(DetectorError::Blocked { status, .. }) => *status,
             ProxyError::Detector(DetectorError::Failed { .. }) => StatusCode::INTERNAL_SERVER_ERROR,

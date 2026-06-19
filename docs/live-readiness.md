@@ -7,7 +7,7 @@ This is the pre-live checklist for the current Rust build. It assumes the firewa
 - Set `upstream.require_api_key: true` in production.
 - Set the environment variable named by `upstream.api_key_env` on the host or container.
 - Keep `server.allowed_paths` restricted to the OpenAI-compatible endpoints you actually expose.
-- Keep `server.strict_chat_validation: true` unless you are explicitly proxying non-chat OpenAI endpoints.
+- Keep `server.strict_chat_validation: true` for `/v1/chat/completions` and `/v1/responses` validation.
 - Keep `logging.audit_body_chars` small enough for your retention policy. Allowed-flow audit previews are sanitized, blocked request/response previews are suppressed, and all audit logs should still be treated as sensitive security telemetry.
 - Put TLS termination in front of the service or add native TLS before exposing it outside a private network.
 
@@ -16,6 +16,7 @@ This is the pre-live checklist for the current Rust build. It assumes the firewa
 - Missing required upstream API key returns HTTP 500 and does not call upstream.
 - Requests for paths outside `server.allowed_paths` return HTTP 404 and do not call upstream.
 - Invalid `/v1/chat/completions` method, content type, body, model, or messages fail before upstream.
+- Invalid `/v1/responses` method, content type, body, model, or input fail before upstream.
 - Prompt-injection, DLP block rules, tool violations, token limits, and rate limits all short-circuit before upstream.
 - Oversized upstream responses fail with HTTP 413 instead of streaming unchecked content.
 
@@ -41,4 +42,11 @@ curl -sS http://127.0.0.1:8080/v1/chat/completions \
   -H "content-type: application/json" \
   -H "authorization: Bearer client-key" \
   --data @tests/fixtures/allowed_chat.json
+```
+
+```bash
+curl -sS http://127.0.0.1:8080/v1/responses \
+  -H "content-type: application/json" \
+  -H "authorization: Bearer client-key" \
+  --data @tests/fixtures/allowed_response.json
 ```

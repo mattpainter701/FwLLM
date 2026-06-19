@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use crate::detectors::message_strings;
+use crate::detectors::prompt_strings;
 
 pub fn estimate_prompt_tokens(body: &Value) -> usize {
     let mut total = 0;
@@ -9,13 +9,16 @@ pub fn estimate_prompt_tokens(body: &Value) -> usize {
         total += estimate_text_tokens(model);
     }
 
-    for message in message_strings(body) {
+    for prompt in prompt_strings(body) {
         total += 4;
-        total += estimate_text_tokens(&message);
+        total += estimate_text_tokens(&prompt);
     }
 
     if let Some(max_tokens) = body.get("max_tokens").and_then(Value::as_u64) {
         total += max_tokens as usize;
+    }
+    if let Some(max_output_tokens) = body.get("max_output_tokens").and_then(Value::as_u64) {
+        total += max_output_tokens as usize;
     }
 
     total

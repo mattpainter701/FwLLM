@@ -296,7 +296,10 @@ fn default_true() -> bool {
 }
 
 fn default_allowed_paths() -> Vec<String> {
-    vec!["/v1/chat/completions".to_string()]
+    vec![
+        "/v1/chat/completions".to_string(),
+        "/v1/responses".to_string(),
+    ]
 }
 
 fn default_max_body_size() -> usize {

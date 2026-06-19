@@ -4,21 +4,23 @@ This document captures the behavior covered by the current Rust service and its 
 
 ## Request Path
 
-1. The firewall accepts OpenAI-compatible JSON requests on `/v1/chat/completions` and other proxied paths.
+1. The firewall accepts OpenAI-compatible JSON requests on `/v1/chat/completions`, `/v1/responses`, and any additional explicitly configured proxied paths.
 2. The request body is capped by `server.max_body_size`.
-3. Only paths listed in `server.allowed_paths` are proxied upstream. The default is `/v1/chat/completions`.
+3. Only paths listed in `server.allowed_paths` are proxied upstream. The default is `/v1/chat/completions` and `/v1/responses`.
 4. When `server.strict_chat_validation` is enabled, `/v1/chat/completions` must be a `POST` with `application/json`, a non-empty `model`, and a non-empty `messages` array.
-5. The configured request detectors run in pipeline order:
+5. With the same strict setting, `/v1/responses` must be a `POST` with `application/json`, a non-empty `model`, and a non-empty `input` string or input array. Optional `instructions` must be a string or null.
+6. The configured request detectors run in pipeline order:
    - rate limiter
    - token budget
    - prompt injection signatures
    - DLP
    - system prompt enforcement
    - tool allow-list validation
-6. If a detector blocks, the firewall returns a JSON error and does not call the upstream.
-7. If a detector redacts, the modified JSON body is forwarded.
-8. The client `Authorization` header is stripped. If `upstream.api_key_env` names a non-empty environment variable, that value is sent as the upstream bearer token.
-9. If `upstream.require_api_key` is true and the key is missing, the request fails closed before the upstream is called.
+7. Prompt inspection reads chat message content, Responses `instructions`, Responses string `input`, and text/content/output fields inside Responses input items.
+8. If a detector blocks, the firewall returns a JSON error and does not call the upstream.
+9. If a detector redacts, the modified JSON body is forwarded.
+10. The client `Authorization` header is stripped. If `upstream.api_key_env` names a non-empty environment variable, that value is sent as the upstream bearer token.
+11. If `upstream.require_api_key` is true and the key is missing, the request fails closed before the upstream is called.
 
 ## Response Path
 
@@ -36,12 +38,18 @@ This document captures the behavior covered by the current Rust service and its 
 | Scenario | Fixture or setup | Expected result |
 | --- | --- | --- |
 | Clean chat request | `tests/fixtures/allowed_chat.json` | Request is forwarded and upstream response is returned. |
+| Clean Responses request | `tests/fixtures/allowed_response.json` | Request is forwarded and upstream response is returned. |
 | Client bearer token | Any forwarded request with client `Authorization` | Client token is not forwarded; configured upstream token is injected when available. |
 | Missing required upstream key | `upstream.require_api_key: true` and env var unset | HTTP 500, upstream receives no request. |
 | Disallowed path | Request to a path not listed in `server.allowed_paths` | HTTP 404, upstream receives no request. |
 | Malformed chat payload | Empty `messages`, missing JSON content type, or wrong method | HTTP 400/405/415, upstream receives no request. |
+| Malformed Responses payload | Missing or empty `input`, missing JSON content type, or wrong method | HTTP 400/405/415, upstream receives no request. |
 | Prompt injection | `tests/fixtures/prompt_injection_block.json` | HTTP 403, error mentions `prompt_injection`, upstream receives no request. |
+| Responses prompt injection | `tests/fixtures/responses_prompt_injection_block.json` | HTTP 403, error mentions `prompt_injection`, upstream receives no request. |
 | Redactable DLP | `tests/fixtures/dlp_redact_email.json` | Request is forwarded with the email replaced by `[REDACTED]`. |
+| Responses redactable DLP | `tests/fixtures/responses_dlp_redact_email.json` | Request is forwarded with the email replaced by `[REDACTED]`. |
+| Unapproved Responses request tool | Request includes a tool type/name outside `detectors.tool_call.allowed_tools` | HTTP 403, upstream receives no request. |
+| Unapproved Responses output tool | Upstream returns a `function_call`, hosted tool call, or custom tool call outside the allow-list | HTTP 403 after upstream response inspection. |
 | Executable HTML in response | Upstream returns a body containing `<script>...</script>` | Response body contains `[REDACTED]` and no script tag. |
 
 Every proxied response includes `cache-control: no-store`, `x-content-type-options: nosniff`, `x-llm-firewall: protected`, and `x-correlation-id`.

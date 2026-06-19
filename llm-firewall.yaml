@@ -2,6 +2,7 @@ server:
   bind: "0.0.0.0:8080"
   allowed_paths:
     - "/v1/chat/completions"
+    - "/v1/responses"
   max_body_size: 1048576
   max_response_buffer: 32768
   request_timeout_secs: 60

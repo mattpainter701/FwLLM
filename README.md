@@ -2,7 +2,7 @@
 
 **A fail-closed Rust guardrail for OpenAI-compatible LLM traffic.**
 
-`llm-firewall` sits in front of chat completion APIs and inspects requests and responses before they touch your model provider. It is built for security teams that need a small binary, predictable behavior, JSON audit logs, and a deployment path that does not require client rewrites.
+`llm-firewall` sits in front of OpenAI-compatible chat and Responses APIs and inspects requests and responses before they touch your model provider. It is built for security teams that need a small binary, predictable behavior, JSON audit logs, and a deployment path that does not require client rewrites.
 
 <p align="center">
   <img src="docs/assets/dual-setup-animation.svg" alt="Animated chalkboard diagram showing passthrough proxy mode and LiteLLM edge mode" width="100%">
@@ -18,7 +18,7 @@ LLM gateways are now production infrastructure. They handle user prompts, tool c
 - Restrict tool/function calls to an allow-list.
 - Enforce token budgets and request rate limits.
 - Strip client bearer tokens and inject the real upstream key.
-- Validate `/v1/chat/completions` shape before proxying.
+- Validate `/v1/chat/completions` and `/v1/responses` shapes before proxying.
 - Emit sanitized audit logs and Prometheus-style metrics.
 
 ## Deployment Models
@@ -55,7 +55,7 @@ This keeps LiteLLM focused on provider routing while FwLLM owns validation, DLP,
 Use this when users or workloads would otherwise call public model APIs directly. Publish an enterprise gateway hostname and set SDK/API policy to use it.
 
 ```text
-apps -> https://llm.company.com/v1/chat/completions
+apps -> https://llm.company.com/v1/chat/completions or /v1/responses
      -> TLS/LB
      -> FwLLM
      -> OpenAI-compatible provider API
@@ -99,6 +99,18 @@ That catches flows, but HTTPS bodies remain encrypted. Inline placement only giv
 - Allow provider egress only from the FwLLM or LiteLLM tier.
 - Keep `/metrics` and `/healthz` on a private listener, private network, or protected load-balancer path.
 - Run at least two FwLLM nodes behind a load balancer for production.
+
+## Pilot Port Plan
+
+Use a separate firewall listener until the path proves stable:
+
+```text
+developer tooling or apps -> FwLLM :4002 -> LiteLLM internal :4000 -> model provider
+```
+
+Keep any existing direct LiteLLM listener on `:4001` only during the pilot window. Once validation, logging, and policy behavior are proven, move clients to the FwLLM listener and make LiteLLM reachable only on the private Docker network or private service VLAN.
+
+FwLLM replaces upstream authentication before forwarding. Do not give clients the LiteLLM master key; use the load balancer, API gateway, or private network controls for client access until native client-key allowlisting is enabled.
 
 ## VM Profile
 
@@ -221,6 +233,15 @@ curl -sS http://127.0.0.1:8080/v1/chat/completions \
   --data @tests/fixtures/allowed_chat.json
 ```
 
+Send a Responses request through the same gateway:
+
+```bash
+curl -sS http://127.0.0.1:8080/v1/responses \
+  -H "content-type: application/json" \
+  -H "authorization: Bearer client-key" \
+  --data @tests/fixtures/allowed_response.json
+```
+
 For production, start from [llm-firewall.yaml](llm-firewall.yaml). It fails closed by default when the upstream API key is missing:
 
 ```yaml
@@ -232,6 +253,7 @@ server:
   bind: "0.0.0.0:8080"
   allowed_paths:
     - "/v1/chat/completions"
+    - "/v1/responses"
   strict_chat_validation: true
 ```
 
@@ -245,7 +267,7 @@ cargo run -- --config llm-firewall.yaml --validate-config
 
 Request path:
 
-1. Strict chat request validation.
+1. Strict chat and Responses request validation.
 2. Rate limiter.
 3. Token budget.
 4. Prompt-injection signatures.
@@ -298,7 +320,7 @@ Current production posture:
 
 - Only configured `server.allowed_paths` are proxied upstream by default.
 - Missing required upstream key returns HTTP 500 and does not call upstream.
-- Invalid chat method, content type, body, model, or messages fail before upstream.
+- Invalid chat or Responses method, content type, body, model, messages, or input fail before upstream.
 - Detector blocks short-circuit before upstream.
 - Audit previews are redacted independently from DLP mutations.
 - Blocked request/response audit previews are suppressed rather than sampled.
@@ -308,6 +330,7 @@ Known limits:
 
 - Streaming uses accumulate-then-forward inspection. This prioritizes security over token-by-token latency.
 - Rate limits and token budgets are in-memory per process.
+- Native client-key allowlisting is not implemented yet; enforce client access at the fronting gateway or private network boundary.
 - Native TLS termination and distributed audit sinks are not implemented yet.
 
 ## Verification
@@ -318,7 +341,7 @@ cargo test --locked
 cargo clippy --locked --all-targets --all-features -- -D warnings
 ```
 
-Current coverage includes unit tests for detectors and binary-level integration tests for forwarding, auth replacement, validation rejection, fail-closed upstream key handling, prompt-injection blocking, DLP redaction, and output sanitization.
+Current coverage includes unit tests for detectors and binary-level integration tests for chat and Responses forwarding, auth replacement, validation rejection, fail-closed upstream key handling, prompt-injection blocking, DLP redaction, tool blocking, and output sanitization.
 
 ## Project Map
 
